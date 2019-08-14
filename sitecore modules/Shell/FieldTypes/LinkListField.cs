@@ -1,14 +1,16 @@
-﻿using System;
-using System.Collections.Specialized;
-using System.Globalization;
-using System.Web.UI;
-using System.Xml;
-using Sitecore;
+﻿using Sitecore;
+using Sitecore.Data;
 using Sitecore.Diagnostics;
 using Sitecore.Resources;
 using Sitecore.Shell.Applications.ContentEditor;
 using Sitecore.Text;
+using Sitecore.Web;
 using Sitecore.Web.UI.Sheer;
+using System;
+using System.Collections.Specialized;
+using System.Globalization;
+using System.Web.UI;
+using System.Xml;
 
 namespace Monoco.CMS.FieldTypes
 {
@@ -17,7 +19,7 @@ namespace Monoco.CMS.FieldTypes
         private const string InternalLinkDialogUrl = "/sitecore/shell/Applications/Dialogs/Internal Link.aspx";
         private const string ExternalLinkDialogUrl = "/sitecore/shell/Applications/Dialogs/External Link.aspx";
         private const string MediaLinkDialogUrl = "/sitecore/shell/Applications/Dialogs/Media Link.aspx";
-        
+
         private string _itemid;
         private string Source
         {
@@ -107,9 +109,15 @@ namespace Monoco.CMS.FieldTypes
             }
             else
             {
+                // Show the dialog using ShowModalDialog.
                 var urlString = new UrlString(args.Parameters["url"]);
-                urlString.Append("va", node.OuterXml);
+                UrlHandle urlHandle = new UrlHandle();
+                urlHandle["ro"] = Source;
+                urlHandle["db"] = Client.ContentDatabase.Name;
+                urlHandle["va"] = node.OuterXml;
+                urlHandle.Add(urlString);
                 urlString.Append("ro", Source);
+                urlString.Append("sc_content", WebUtil.GetQueryString("sc_content"));
                 Sitecore.Context.ClientPage.ClientResponse.ShowModalDialog(urlString.ToString(), true);
                 args.WaitForPostBack();
             }
@@ -150,24 +158,31 @@ namespace Monoco.CMS.FieldTypes
                     }
 
                     //xmlDocument2.SelectSingleNode("links").AppendChild(xmlDocument2.ImportNode(xmlDocument.SelectSingleNode("link"), true));
-                    
+
 
                     // Call Sitecore client to update the link list client side.
                     Sitecore.Context.ClientPage.ClientResponse.Eval(string.Concat(new string[]
-					{
-						"scContent.linklistInsertLink('", ID, "', {text:'", selectText, "'})" }));
+                    {
+                        "scContent.linklistInsertLink('", ID, "', {text:'", selectText, "'})"
+                    }));
                 }
             }
             else
             {
                 // Show the dialog using ShowModalDialog.
                 var urlString = new UrlString(args.Parameters["url"]);
-                urlString.Append("va", XmlValue.ToString());
+                UrlHandle urlHandle = new UrlHandle();
+                urlHandle["ro"] = Source;
+                urlHandle["db"] = Client.ContentDatabase.Name;
+                urlHandle["va"] = this.XmlValue.ToString();
+                urlHandle.Add(urlString);
                 urlString.Append("ro", Source);
+                urlString.Append("sc_content", WebUtil.GetQueryString("sc_content"));
                 Sitecore.Context.ClientPage.ClientResponse.ShowModalDialog(urlString.ToString(), true);
                 args.WaitForPostBack();
             }
         }
+
         /// <summary>
         /// Message handler for Sitecore events.
         /// </summary>
@@ -198,7 +213,7 @@ namespace Monoco.CMS.FieldTypes
                     case "action:delete":
                         // Arguments from message is comma delimited list of index positions of nodes to remove.
                         var remove = message.Arguments["remove"];
-                        
+
                         if (!string.IsNullOrEmpty(remove))
                         {
                             var array = remove.Split(new[] { ',' });
@@ -210,7 +225,7 @@ namespace Monoco.CMS.FieldTypes
                                 RemoveEntryByIndex(index);
 
                                 Sitecore.Context.ClientPage.ClientResponse.Eval(
-                                string.Concat(new []
+                                string.Concat(new[]
                                     {
                                         "scContent.linklistRemoveLink('", ID, "', {index: " + index + "})"
                                     })
@@ -296,13 +311,13 @@ namespace Monoco.CMS.FieldTypes
         {
             Assert.ArgumentNotNull(url, "url");
             var parameters = new NameValueCollection
-			{
+            {
 
-				{
-					"url",
-					url
-				}
-			};
+                {
+                    "url",
+                    url
+                }
+            };
             Sitecore.Context.ClientPage.Start(this, "InsertLink", parameters);
         }
         protected override void OnLoad(EventArgs e)
@@ -376,6 +391,7 @@ namespace Monoco.CMS.FieldTypes
             output.RenderEndTag(); // </tr>
             output.RenderEndTag(); // </table>
         }
+
         /// <summary>
         /// Formats the list item text based on a link node.
         /// </summary>
@@ -383,10 +399,31 @@ namespace Monoco.CMS.FieldTypes
         /// <returns></returns>
         private string GetSelectText(XmlNode node)
         {
-            return string.Format("{0} ({1}: {2})",
-                GetAttribute(node, "text"), 
-                GetLinkType(node),
-                GetLinkUrl(node));
+            var attr = GetAttribute(node, "text");
+            var linkType = GetLinkType(node);
+            var url = string.Empty;
+            if (linkType.Equals("internal") || linkType.Equals("media"))
+            {
+                string itemId = GetAttribute(node, "id");
+                if (!string.IsNullOrEmpty(itemId))
+                {
+                    var item = Client.ContentDatabase.GetItem(new ID(itemId));
+                    if (item != null)
+                    {
+                        url = item.Paths.ContentPath;
+                    }
+                }
+            }
+            else
+            {
+                var urlObj = GetLinkUrl(node);
+                if (urlObj != null)
+                {
+                    url = urlObj;
+                }
+            }
+
+            return string.Format("{0} ({1}: {2})", attr, linkType, url);
         }
 
         /// <summary>
@@ -411,24 +448,27 @@ namespace Monoco.CMS.FieldTypes
 
             output.Write(imageBuilder.ToString());
         }
+
         /// <summary>
         /// Gets the link url attribute of a node.
         /// </summary>
         /// <param name="node"></param>
         /// <returns></returns>
-        private object GetLinkUrl(XmlNode node)
+        private string GetLinkUrl(XmlNode node)
         {
             return GetAttribute(node, "url");
         }
+
         /// <summary>
         /// Gets the link type attribute of a link node.
         /// </summary>
         /// <param name="node"></param>
         /// <returns></returns>
-        private object GetLinkType(XmlNode node)
+        private string GetLinkType(XmlNode node)
         {
             return GetAttribute(node, "linktype");
         }
+
         /// <summary>
         /// Gets an attribute from the node.
         /// </summary>
@@ -449,6 +489,7 @@ namespace Monoco.CMS.FieldTypes
             }
             return result;
         }
+
         /// <summary>
         /// Creates a new XmlDocument with nodes based on the field's value.
         /// </summary>
@@ -459,6 +500,7 @@ namespace Monoco.CMS.FieldTypes
             xmlDocument.LoadXml(GetValue());
             return xmlDocument;
         }
+
         /// <summary>
         /// Returns the field's value (or an empty XML string)-
         /// </summary>
@@ -468,9 +510,10 @@ namespace Monoco.CMS.FieldTypes
             string result;
             if (!string.IsNullOrEmpty(Value)) { result = Value; }
             else { result = "<links />"; }
-            
+
             return result;
         }
+
         /// <summary>
         /// Stores the field's value.
         /// </summary>
@@ -483,6 +526,7 @@ namespace Monoco.CMS.FieldTypes
             }
             Value = value;
         }
+
         /// <summary>
         /// Indicates to the Sitecore client that the content has been modified.
         /// </summary>
